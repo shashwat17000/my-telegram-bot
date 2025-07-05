@@ -1,7 +1,9 @@
-# === नया और स्मार्ट कोड ===
+# === Vercel और Webhook के लिए बनाया गया स्मार्ट बॉट कोड ===
 
 import os
 import random
+import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -9,22 +11,34 @@ from telegram.ext import (
     CallbackQueryHandler,
     ConversationHandler,
     ContextTypes,
-    MessageHandler,
-    filters
 )
 
-# टोकन को Secrets से लेना
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
+# Logging को सेटअप करें ताकि Vercel पर एरर देख सकें
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# टोकन को Secrets (Environment Variables) से लेना
+try:
+    BOT_TOKEN = os.environ.get('BOT_TOKEN')
+    if BOT_TOKEN is None:
+        raise ValueError("BOT_TOKEN नहीं मिला! कृपया Vercel में सेट करें।")
+except ValueError as e:
+    logger.error(e)
+    # आप चाहें तो यहां प्रोग्राम को बंद कर सकते हैं
+    # exit()
 
 # बातचीत के स्टेप्स (States)
-BRAND, MODEL, RAM = range(3)
+BRAND, MODEL, RAM, FINAL_RESULT = range(4)
 
-# सभी फोन मॉडल्स का डेटा (इसे आप और बढ़ा सकते हैं)
+# सभी फोन मॉडल्स का डेटा (आप इसे और बढ़ा सकते हैं)
 phone_models = {
     "Samsung": ["Galaxy S23", "Galaxy A54", "Galaxy M34", "Galaxy F23"],
     "Xiaomi": ["Redmi Note 12 Pro", "Poco F5", "Poco X3 Pro", "Redmi 10"],
     "Realme": ["Realme 11 Pro", "Realme GT Master", "Realme Narzo 50"],
-    "Apple": ["iPhone 14 Pro", "iPhone 13", "iPhone 11", "iPhone XR"]
+    "Apple": ["iPhone 14 Pro", "iPhone 13", "iPhone 11", "iPhone XR"],
+    "Other": ["Low-End Device", "Mid-Range Device", "High-End Device"]
 }
 
 # --- बातचीत शुरू करने वाले फंक्शन ---
@@ -52,9 +66,7 @@ async def brand_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data['brand'] = brand # यूजर का ब्रांड सेव कर लिया
     
     models = phone_models[brand]
-    keyboard = [
-        [InlineKeyboardButton(model, callback_data=model)] for model in models
-    ]
+    keyboard = [[InlineKeyboardButton(model, callback_data=model)] for model in models]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await query.edit_message_text(text=f"Step 2: अब अपना {brand} मॉडल चुनें:", reply_markup=reply_markup)
@@ -68,10 +80,8 @@ async def model_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     model = query.data
     context.user_data['model'] = model # यूजर का मॉडल सेव कर लिया
 
-    ram_options = ["4 GB", "6 GB", "8 GB", "12 GB+"]
-    keyboard = [
-        [InlineKeyboardButton(ram, callback_data=ram)] for ram in ram_options
-    ]
+    ram_options = ["2-3 GB", "4 GB", "6 GB", "8 GB", "12 GB+"]
+    keyboard = [[InlineKeyboardButton(ram, callback_data=ram)] for ram in ram_options]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(text="Step 3: अपनी रैम (RAM) चुनें:", reply_markup=reply_markup)
@@ -83,16 +93,19 @@ async def ram_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await query.answer()
 
     ram = query.data
-    brand = context.user_data['brand']
-    model = context.user_data['model']
+    brand = context.user_data.get('brand', 'N/A')
+    model = context.user_data.get('model', 'N/A')
     
     # रैंडम सेंसिटिविटी जेनरेट करें
     general = random.randint(95, 100)
     red_dot = random.randint(92, 100)
     scope_2x = random.randint(88, 98)
-    # आप चाहें तो रैम के हिसाब से वैल्यू बदल सकते हैं
-    if "4 GB" in ram:
-        dpi = random.randint(380, 420)
+    
+    # रैम के हिसाब से DPI बदलें
+    if "2-3 GB" in ram:
+        dpi = random.randint(360, 410)
+    elif "4 GB" in ram:
+        dpi = random.randint(400, 450)
     else:
         dpi = random.randint(450, 520)
 
@@ -113,29 +126,41 @@ async def ram_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 # --- बातचीत कैंसिल करने का फंक्शन ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("प्रोसेस कैंसिल कर दिया गया है।")
+    await update.message.reply_text("प्रोसेस कैंसिल कर दिया गया है। नई शुरुआत के लिए /start टाइप करें।")
     return ConversationHandler.END
 
+# === Vercel के लिए मुख्य सेटअप ===
 
-def main() -> None:
-    application = Application.builder().token(BOT_TOKEN).build()
+# एप्लीकेशन को परिभाषित करें
+application = Application.builder().token(BOT_TOKEN).build()
 
-    # बातचीत को संभालने वाला ConversationHandler
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("sensitivity", sensitivity_start)],
-        states={
-            BRAND: [CallbackQueryHandler(brand_choice)],
-            MODEL: [CallbackQueryHandler(model_choice)],
-            RAM: [CallbackQueryHandler(ram_choice)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
+# बातचीत को संभालने वाला ConversationHandler
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("sensitivity", sensitivity_start)],
+    states={
+        BRAND: [CallbackQueryHandler(brand_choice)],
+        MODEL: [CallbackQueryHandler(model_choice)],
+        RAM: [CallbackQueryHandler(ram_choice)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(conv_handler)
-    
-    print("स्मार्ट बॉट अब चल रहा है...")
-    application.run_polling()
+# कमांड्स को रजिस्टर करें
+application.add_handler(CommandHandler("start", start))
+application.add_handler(conv_handler)
 
+
+# --- Vercel के लिए async main फंक्शन ---
+# यह Vercel द्वारा कॉल किया जाएगा
+async def main(request):
+    """Vercel के webhook अनुरोधों को संभालता है।"""
+    await application.initialize()
+    update = Update.de_json(await request.get_json(), application.bot)
+    await application.process_update(update)
+    return {"status": "ok"}
+
+
+# --- लोकल टेस्टिंग के लिए (यह Vercel पर नहीं चलेगा) ---
 if __name__ == "__main__":
-    main()
+    print("बॉट लोकल मोड में चल रहा है (Polling)...")
+    application.run_polling()
