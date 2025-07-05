@@ -152,7 +152,7 @@ application.add_handler(conv_handler)
 
 # --- Vercel के लिए async main फंक्शन ---
 # यह Vercel द्वारा कॉल किया जाएगा
-async def main(request):
+async def handler(request):
     """Vercel के webhook अनुरोधों को संभालता है।"""
     await application.initialize()
     update = Update.de_json(await request.get_json(), application.bot)
