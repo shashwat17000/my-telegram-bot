@@ -1,9 +1,10 @@
-# === Vercel के लिए सही किया हुआ कोड (handler फंक्शन के साथ) ===
+# === अंतिम और सही किया हुआ कोड (Vercel के लिए) ===
 
 import os
 import random
 import logging
 import asyncio
+import json # JSON लाइब्रेरी को इम्पोर्ट करें
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -13,19 +14,19 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Logging को सेटअप करें ताकि Vercel पर एरर देख सकें
+# Logging को सेटअप करें
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# टोकन को Secrets (Environment Variables) से लेना
+# टोकन को Secrets से लेना
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
-# बातचीत के स्टेप्स (States)
-BRAND, MODEL, RAM, FINAL_RESULT = range(4)
+# बातचीत के स्टेप्स
+BRAND, MODEL, RAM = range(3)
 
-# सभी फोन मॉडल्स का डेटा
+# फोन मॉडल्स का डेटा
 phone_models = {
     "Samsung": ["Galaxy S23", "Galaxy A54", "Galaxy M34", "Galaxy F23"],
     "Xiaomi": ["Redmi Note 12 Pro", "Poco F5", "Poco X3 Pro", "Redmi 10"],
@@ -34,7 +35,7 @@ phone_models = {
     "Other": ["Low-End Device", "Mid-Range Device", "High-End Device"]
 }
 
-# --- बातचीत के फंक्शन्स (कोई बदलाव नहीं) ---
+# --- बातचीत के फंक्शन्स (इनमें कोई बदलाव नहीं) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "नमस्ते! मैं आपका एडवांस सेंसिटिविटी बॉट हूँ।\n\n"
@@ -101,6 +102,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # एप्लीकेशन को एक बार बनाएं
 application = Application.builder().token(BOT_TOKEN).build()
 
+# बातचीत को संभालने वाला ConversationHandler
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler("sensitivity", sensitivity_start)],
     states={
@@ -113,16 +115,29 @@ conv_handler = ConversationHandler(
 application.add_handler(CommandHandler("start", start))
 application.add_handler(conv_handler)
 
+
 # Vercel इसी 'handler' फंक्शन को ढूंढेगा
-async def handler(request, response):
-    """Vercel के webhook अनुरोधों को संभालता है।"""
-    try:
-        await application.initialize()
-        update_data = await request.json()
-        update = Update.de_json(update_data, application.bot)
-        await application.process_update(update)
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-    
-    # Telegram को बताएं कि हमें अनुरोध मिल गया है
-    return {"statusCode": 200}
+# यह अपडेटेड और सही तरीका है
+from http.server import BaseHTTPRequestHandler
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        try:
+            # रिक्वेस्ट बॉडी से डेटा पढ़ें
+            content_length = int(self.headers['Content-Length'])
+            body = self.rfile.read(content_length)
+            update_data = json.loads(body.decode('utf-8'))
+            
+            # टेलीग्राम अपडेट को प्रोसेस करें
+            update = Update.de_json(update_data, application.bot)
+            
+            # asyncio इवेंट लूप में अपडेट को चलाएं
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(application.process_update(update))
+
+            # सफलता का जवाब भेजें
+            self.send_response(200)
+            self.end_headers()
+        except Exception as e:
+            logger.error(f"An error occurred: {e}", exc_info=True)
+            self.send_response(500)
+            self.end_headers()
