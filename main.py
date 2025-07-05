@@ -1,10 +1,11 @@
-# === अंतिम और सही किया हुआ कोड (Vercel के लिए) ===
+# === अंतिम और सबसे मज़बूत कोड (Vercel के लिए) ===
 
 import os
 import random
 import logging
 import asyncio
-import json # JSON लाइब्रेरी को इम्पोर्ट करें
+import json
+from http.server import BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -23,10 +24,8 @@ logger = logging.getLogger(__name__)
 # टोकन को Secrets से लेना
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
-# बातचीत के स्टेप्स
+# --- बातचीत के स्टेप्स और फोन डेटा (कोई बदलाव नहीं) ---
 BRAND, MODEL, RAM = range(3)
-
-# फोन मॉडल्स का डेटा
 phone_models = {
     "Samsung": ["Galaxy S23", "Galaxy A54", "Galaxy M34", "Galaxy F23"],
     "Xiaomi": ["Redmi Note 12 Pro", "Poco F5", "Poco X3 Pro", "Redmi 10"],
@@ -35,7 +34,7 @@ phone_models = {
     "Other": ["Low-End Device", "Mid-Range Device", "High-End Device"]
 }
 
-# --- बातचीत के फंक्शन्स (इनमें कोई बदलाव नहीं) ---
+# --- बातचीत के फंक्शन्स (कोई बदलाव नहीं) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "नमस्ते! मैं आपका एडवांस सेंसिटिविटी बॉट हूँ।\n\n"
@@ -100,27 +99,41 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # === Vercel के लिए मुख्य सेटअप ===
 
 # एप्लीकेशन को एक बार बनाएं
-application = Application.builder().token(BOT_TOKEN).build()
+if BOT_TOKEN:
+    application = Application.builder().token(BOT_TOKEN).build()
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("sensitivity", sensitivity_start)],
+        states={
+            BRAND: [CallbackQueryHandler(brand_choice)],
+            MODEL: [CallbackQueryHandler(model_choice)],
+            RAM: [CallbackQueryHandler(ram_choice)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
+else:
+    logger.error("BOT_TOKEN is not set. The application cannot be initialized.")
+    application = None
 
-# बातचीत को संभालने वाला ConversationHandler
-conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("sensitivity", sensitivity_start)],
-    states={
-        BRAND: [CallbackQueryHandler(brand_choice)],
-        MODEL: [CallbackQueryHandler(model_choice)],
-        RAM: [CallbackQueryHandler(ram_choice)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-)
-application.add_handler(CommandHandler("start", start))
-application.add_handler(conv_handler)
 
-
-# Vercel इसी 'handler' फंक्शन को ढूंढेगा
-# यह अपडेटेड और सही तरीका है
-from http.server import BaseHTTPRequestHandler
+# Vercel इसी 'handler' क्लास को ढूंढेगा
 class handler(BaseHTTPRequestHandler):
+    
+    def do_GET(self):
+        # GET रिक्वेस्ट के लिए एक जवाब, ताकि 501 एरर न आए
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Hello! This is a Telegram bot. Please interact with it on Telegram.")
+
     def do_POST(self):
+        if application is None:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(b"Bot is not configured. Check BOT_TOKEN.")
+            return
+
         try:
             # रिक्वेस्ट बॉडी से डेटा पढ़ें
             content_length = int(self.headers['Content-Length'])
@@ -128,16 +141,21 @@ class handler(BaseHTTPRequestHandler):
             update_data = json.loads(body.decode('utf-8'))
             
             # टेलीग्राम अपडेट को प्रोसेस करें
-            update = Update.de_json(update_data, application.bot)
-            
-            # asyncio इवेंट लूप में अपडेट को चलाएं
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(application.process_update(update))
+            # asyncio.run() का इस्तेमाल करें जो इवेंट लूप को मैनेज करता है
+            asyncio.run(self.process_telegram_update(update_data))
 
             # सफलता का जवाब भेजें
             self.send_response(200)
             self.end_headers()
+            self.wfile.write(b"OK")
         except Exception as e:
-            logger.error(f"An error occurred: {e}", exc_info=True)
+            logger.error(f"Error processing POST request: {e}", exc_info=True)
             self.send_response(500)
             self.end_headers()
+
+    async def process_telegram_update(self, update_data):
+        # यह सुनिश्चित करें कि एप्लीकेशन इनिशियलाइज़ हो चुकी है
+        await application.initialize()
+        update = Update.de_json(update_data, application.bot)
+        await application.process_update(update)
+        
